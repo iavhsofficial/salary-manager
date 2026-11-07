@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import tkinter as tk
 from src.database import init_database
+from ui.login import LoginWindow
 from ui.main_window import MainWindow
 
 
@@ -17,7 +18,13 @@ def main():
     # Initialize database on startup
     init_database()
 
-    # Launch GUI
+    # Show login window first
+    login = LoginWindow()
+    if not login.run():
+        # User cancelled or failed login
+        return
+
+    # Login successful — launch main window
     root = tk.Tk()
     app = MainWindow(root)
     root.mainloop()

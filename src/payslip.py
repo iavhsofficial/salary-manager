@@ -11,7 +11,8 @@ from reportlab.platypus import (
 )
 
 from src.config import (
-    SCHOOL_NAME, PAYSLIP_TITLE, PAYSLIP_FOOTER, PAYSLIP_DIR
+    SCHOOL_NAME, PAYSLIP_TITLE, PAYSLIP_FOOTER, get_payslip_dir,
+    ASSETS_DIR
 )
 
 
@@ -20,10 +21,19 @@ def safe_filename(name):
     return re.sub(r"[^\w\s-]", "", name).replace(" ", "_")
 
 
-def format_amount(value):
+def fmt(value):
     """Format a number as '12,345'."""
     try:
         return f"{float(value or 0):,.0f}"
+    except (ValueError, TypeError):
+        return "0"
+
+
+def fmt_hrs(value):
+    """Format hours/counts (integers)."""
+    try:
+        v = float(value or 0)
+        return f"{int(v)}" if v == int(v) else f"{v:,.2f}"
     except (ValueError, TypeError):
         return "0"
 
@@ -32,50 +42,48 @@ def generate_payslip(staff, salary, month, year, open_after=False):
     """
     Generate a PDF payslip.
 
-    staff:  dict with name, sr_no, doj, basic_pay
-    salary: dict with writing, speaking, checking, dis, ct, od,
-            ot_extra, e_day, la_adv, gp_fund, sec, s_sec, oab, sl,
-            cl_day, ann_l, ab_fine, gross_pay, total_ded, net_pay,
-            total_1, total_2, eda, fine, cl_fine
+    staff:  dict with name, sr_no, date_of_joining, basic_pay, payment_mode,
+            bank_name, bank_account, department, designation
+    salary: dict with all salary fields (see calculations.calculate_salary)
     """
-    # ---- Prepare values ----
+    # ---- Extract values ----
     name = staff.get("name", "Unknown")
     sr_no = staff.get("sr_no", "")
-    doj = staff.get("doj", "")
+    doj = staff.get("date_of_joining", "")
     basic = float(staff.get("basic_pay", 0) or 0)
+    dept = staff.get("department", "")
+    desig = staff.get("designation", "")
+    pay_mode = staff.get("payment_mode", "Cash")
 
     writing = float(salary.get("writing", 0) or 0)
     speaking = float(salary.get("speaking", 0) or 0)
-    total_1 = float(salary.get("total_1", basic + writing + speaking) or 0)
-
     checking = float(salary.get("checking", 0) or 0)
-    dis = float(salary.get("dis", 0) or 0)
-    ct = float(salary.get("ct", 0) or 0)
-    od = float(salary.get("od", 0) or 0)
-    total_2 = float(salary.get("total_2", checking + dis + ct + od) or 0)
-
-    ot_extra = float(salary.get("ot_extra", 0) or 0)
-    e_day = float(salary.get("e_day", 0) or 0)
-    eda = float(salary.get("eda", 0) or 0)
+    class_teacher = float(salary.get("class_teacher", 0) or 0)
+    coordination = float(salary.get("coordination", 0) or 0)
+    previous_pay = float(salary.get("previous_pay", 0) or 0)
+    increment = float(salary.get("increment", 0) or 0)
+    overtime = float(salary.get("overtime_allowance", 0) or 0)
     gross_pay = float(salary.get("gross_pay", 0) or 0)
 
-    la_adv = float(salary.get("la_adv", 0) or 0)
+    no_late = int(salary.get("no_late_arrivals", 0) or 0)
+    late_ded = float(salary.get("late_arrival_deduction", 0) or 0)
+    no_short = int(salary.get("no_short_leaves", 0) or 0)
+    short_ded = float(salary.get("short_leave_deduction", 0) or 0)
+    no_leave = int(salary.get("no_leaves", 0) or 0)
+    leave_ded = float(salary.get("leaves_deduction", 0) or 0)
+    absentee = float(salary.get("absentee_deduction", 0) or 0)
+
     gp_fund = float(salary.get("gp_fund", 0) or 0)
-    sec = float(salary.get("sec", 0) or 0)
-    s_sec = float(salary.get("s_sec", 0) or 0)
+    social_sec = float(salary.get("social_security", 0) or 0)
+    security = float(salary.get("security_deduction", 0) or 0)
     oab = float(salary.get("oab", 0) or 0)
-    sl = float(salary.get("sl", 0) or 0)
-    cl_day = float(salary.get("cl_day", 0) or 0)
-    fine = float(salary.get("fine", 0) or 0)
-    cl_fine = float(salary.get("cl_fine", 0) or 0)
-    ann_l = float(salary.get("ann_l", 0) or 0)
-    ab_fine = float(salary.get("ab_fine", 0) or 0)
-    total_ded = float(salary.get("total_ded", 0) or 0)
+    total_ded = float(salary.get("total_deductions", 0) or 0)
     net_pay = float(salary.get("net_pay", 0) or 0)
 
-    # ---- Output path ----
-    output_path = PAYSLIP_DIR / f"{safe_filename(name)}_{month}_{year}.pdf"
-
+        # ---- Output path (month-wise folder) ----
+    month_folder = get_payslip_dir(month, year)
+    output_path = month_folder / f"{safe_filename(name)}.pdf"
+    
     # ---- Build PDF ----
     doc = SimpleDocTemplate(
         str(output_path), pagesize=A4,
@@ -86,6 +94,18 @@ def generate_payslip(staff, salary, month, year, open_after=False):
 
     styles = getSampleStyleSheet()
     story = []
+
+    # ---- Logo (if available) ----
+    logo_path = ASSETS_DIR / "school_logo.png"
+    if logo_path.exists():
+        try:
+            from reportlab.platypus import Image
+            logo = Image(str(logo_path), width=25*mm, height=25*mm)
+            logo.hAlign = "CENTER"
+            story.append(logo)
+            story.append(Spacer(1, 4))
+        except Exception as e:
+            print(f"Logo load failed: {e}")
 
     # ---- Header ----
     header_style = ParagraphStyle(
@@ -104,57 +124,62 @@ def generate_payslip(staff, salary, month, year, open_after=False):
 
     # ---- Employee info ----
     info = Table(
-        [["Sr #", str(sr_no), "Name", name, "D.O.J", str(doj)]],
-        colWidths=[15 * mm, 20 * mm, 20 * mm, 70 * mm, 20 * mm, 30 * mm],
+        [
+            ["Sr #", str(sr_no), "Name", name, "D.O.J", str(doj)],
+            ["Dept", dept, "Designation", desig,
+             "Payment", pay_mode],
+        ],
+        colWidths=[15 * mm, 20 * mm, 22 * mm, 68 * mm, 20 * mm, 30 * mm],
     )
     info.setStyle(TableStyle([
         ("FONT", (0, 0), (-1, -1), "Helvetica", 9),
-        ("FONT", (0, 0), (0, 0), "Helvetica-Bold", 9),
-        ("FONT", (2, 0), (2, 0), "Helvetica-Bold", 9),
-        ("FONT", (4, 0), (4, 0), "Helvetica-Bold", 9),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8eef7")),
+        ("FONT", (0, 0), (0, -1), "Helvetica-Bold", 9),
+        ("FONT", (2, 0), (2, -1), "Helvetica-Bold", 9),
+        ("FONT", (4, 0), (4, -1), "Helvetica-Bold", 9),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#e8eef7")),
         ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#1a3a6b")),
         ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
     story.append(info)
     story.append(Spacer(1, 10))
 
-    # ---- Earnings / Deductions side by side ----
+    # ---- Earnings (left) ----
     earnings_rows = [
         ["EARNINGS", "Rs."],
-        ["Basic Pay", format_amount(basic)],
-        ["Writing", format_amount(writing)],
-        ["Speaking", format_amount(speaking)],
-        ["Total # 1", format_amount(total_1)],
-        ["Checking", format_amount(checking)],
-        ["DIS", format_amount(dis)],
-        ["C.T", format_amount(ct)],
-        ["O.D", format_amount(od)],
-        ["Total # 2", format_amount(total_2)],
-        ["O.T / Extra", format_amount(ot_extra)],
-        ["E Day", format_amount(e_day)],
-        ["EDA", format_amount(eda)],
-        ["Gross Pay", format_amount(gross_pay)],
+        ["Basic Pay", fmt(basic)],
+        ["Writing", fmt(writing)],
+        ["Speaking", fmt(speaking)],
+        ["Checking", fmt(checking)],
+        ["Class Teacher", fmt(class_teacher)],
+        ["Coordination", fmt(coordination)],
+        ["Previous Pay", fmt(previous_pay)],
+        ["Increment", fmt(increment)],
+        ["Overtime", fmt(overtime)],
+        ["", ""],
+        ["GROSS PAY", fmt(gross_pay)],
     ]
 
+    # ---- Deductions (right) ----
     deductions_rows = [
         ["DEDUCTIONS", "Rs."],
-        ["LA / Adv / Fine", format_amount(la_adv)],
-        ["G.P Fund", format_amount(gp_fund)],
-        ["Sec", format_amount(sec)],
-        ["S.Sec", format_amount(s_sec)],
-        ["OAB", format_amount(oab)],
-        ["S.L", format_amount(sl)],
-        ["Fine", format_amount(fine)],
-        ["C.L Day", format_amount(cl_day)],
-        ["C.L Fine", format_amount(cl_fine)],
-        ["Ann. L", format_amount(ann_l)],
-        ["AB Fine", format_amount(ab_fine)],
-        ["Total Ded", format_amount(total_ded)],
+        [f"Late Arrivals ({no_late})", fmt(late_ded)],
+        [f"Short Leaves ({no_short})", fmt(short_ded)],
+        [f"Leaves ({no_leave})", fmt(leave_ded)],
+        ["Absentee", fmt(absentee)],
+        ["GP Fund", fmt(gp_fund)],
+        ["Social Security", fmt(social_sec)],
+        ["Security Ded.", fmt(security)],
+        ["OAB", fmt(oab)],
+        ["", ""],
+        ["", ""],
+        ["TOTAL DEDUCTIONS", fmt(total_ded)],
     ]
 
+    # Common style
     t_style = TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a3a6b")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -176,6 +201,22 @@ def generate_payslip(staff, salary, month, year, open_after=False):
     t_ded = Table(deductions_rows, colWidths=[45 * mm, 30 * mm])
     t_ded.setStyle(t_style)
 
+    # Highlight GROSS PAY and TOTAL DEDUCTIONS rows
+    gross_row_idx = len(earnings_rows) - 1
+    ded_row_idx = len(deductions_rows) - 1
+    t_earn.setStyle(TableStyle([
+        ("BACKGROUND", (0, gross_row_idx), (-1, gross_row_idx),
+         colors.HexColor("#d4e4f7")),
+        ("FONT", (0, gross_row_idx), (-1, gross_row_idx),
+         "Helvetica-Bold", 10),
+    ]))
+    t_ded.setStyle(TableStyle([
+        ("BACKGROUND", (0, ded_row_idx), (-1, ded_row_idx),
+         colors.HexColor("#f7d4d4")),
+        ("FONT", (0, ded_row_idx), (-1, ded_row_idx),
+         "Helvetica-Bold", 10),
+    ]))
+
     side = Table(
         [[t_earn, "", t_ded]],
         colWidths=[78 * mm, 8 * mm, 78 * mm],
@@ -186,11 +227,11 @@ def generate_payslip(staff, salary, month, year, open_after=False):
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
     ]))
     story.append(side)
-    story.append(Spacer(1, 12))
+    story.append(Spacer(1, 14))
 
     # ---- Net Pay highlight ----
     net_table = Table(
-        [["NET PAY", f"Rs. {format_amount(net_pay)}"]],
+        [["NET PAY", f"Rs. {fmt(net_pay)}"]],
         colWidths=[100 * mm, 60 * mm],
     )
     net_table.setStyle(TableStyle([

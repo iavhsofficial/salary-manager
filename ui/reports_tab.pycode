@@ -1,0 +1,528 @@
+"""
+Reports tab — complete/cash/bank staff statements with print, Excel, PDF.
+Includes 30 detailed columns.
+"""
+import os
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+
+from src.config import (
+    MONTHS, DEFAULT_MONTH, DEFAULT_YEAR,
+    SCHOOL_NAME, get_payslip_dir
+)
+from src import database as db
+
+
+REPORT_TYPES = [
+    "All Staff Statement",
+    "Cash in Hand",
+    "Bank Only",
+]
+
+
+# All columns — (label, key, width_mm, align)
+REPORT_COLUMNS = [
+    ("Sr",              "sr_no",                  8,  "center"),
+    ("Name",            "name",                   38, "left"),
+    ("D.O.J",           "date_of_joining",        20, "center"),
+    ("Basic Pay",       "basic_pay",              20, "right"),
+    ("Writing",         "writing",                16, "right"),
+    ("Speaking",        "speaking",               16, "right"),
+    ("Checking",        "checking",               16, "right"),
+    ("Class Teacher",   "class_teacher",          20, "right"),
+    ("Coordination",    "coordination",           20, "right"),
+    ("Previous Pay",    "previous_pay",           20, "right"),
+    ("Increment",       "increment",              16, "right"),
+    ("Gross Pay",       "gross_pay",              20, "right"),
+    ("GP Fund",         "gp_fund",                16, "right"),
+    ("No. Late",        "no_late_arrivals",       14, "center"),
+    ("L.A Deduct",      "late_arrival_deduction", 20, "right"),
+    ("Short Leave",     "no_short_leaves",        14, "center"),
+    ("S.L Deduct",      "short_leave_deduction",  18, "right"),
+    ("No. Leaves",      "no_leaves",              14, "center"),
+    ("Leaves Deduct",   "leaves_deduction",       20, "right"),
+    ("No. Absent",      "no_absentees",           14, "center"),
+    ("Absent Deduct",   "absentee_deduction",     20, "right"),
+    ("Security",        "security_deduction",     18, "right"),
+    ("Total Security",  "security_total",         20, "right"),
+    ("Social Security", "social_security",        20, "right"),
+    ("OAB",             "oab",                    12, "right"),
+    ("Total Deductions","total_deductions",       22, "right"),
+    ("OT Hours",        "overtime_hours",         16, "center"),
+    ("OT Allowance",    "overtime_allowance",     20, "right"),
+    ("Net Pay",         "net_pay",                22, "right"),
+    ("Payment",         "payment_mode",           14, "center"),
+    ("Bank Account",    "bank_account",           28, "center"),
+]
+
+
+class ReportsTab:
+    def __init__(self, parent):
+        self.parent = parent
+        self.data = []
+        self.month = DEFAULT_MONTH
+        self.year = DEFAULT_YEAR
+        self.report_type = REPORT_TYPES[0]
+
+        self._build_ui()
+
+    # ----------------------------------------
+    # UI
+    # ----------------------------------------
+    def _build_ui(self):
+        # Top toolbar
+        top = tk.Frame(self.parent, bg="#f0f4f8")
+        top.pack(fill="x", padx=10, pady=15)
+
+        tk.Label(
+            top, text="Month:",
+            font=("Segoe UI", 10, "bold"), bg="#f0f4f8",
+        ).pack(side="left")
+
+        self.month_var = tk.StringVar(value=DEFAULT_MONTH)
+        ttk.Combobox(
+            top, textvariable=self.month_var,
+            values=MONTHS, width=12, state="readonly",
+        ).pack(side="left", padx=5)
+
+        tk.Label(
+            top, text="Year:",
+            font=("Segoe UI", 10, "bold"), bg="#f0f4f8",
+        ).pack(side="left", padx=(15, 5))
+
+        self.year_var = tk.StringVar(value=str(DEFAULT_YEAR))
+        tk.Entry(
+            top, textvariable=self.year_var,
+            font=("Segoe UI", 10), width=8,
+        ).pack(side="left")
+
+        tk.Label(
+            top, text="Report:",
+            font=("Segoe UI", 10, "bold"), bg="#f0f4f8",
+        ).pack(side="left", padx=(15, 5))
+
+        self.report_var = tk.StringVar(value=REPORT_TYPES[0])
+        ttk.Combobox(
+            top, textvariable=self.report_var,
+            values=REPORT_TYPES, width=22, state="readonly",
+        ).pack(side="left")
+
+        tk.Button(
+            top, text="🔄 Load",
+            font=("Segoe UI", 10, "bold"),
+            bg="#007bff", fg="white",
+            padx=15, pady=5, cursor="hand2",
+            command=self.load_report,
+        ).pack(side="left", padx=15)
+
+        # Output buttons
+        top2 = tk.Frame(self.parent, bg="#f0f4f8")
+        top2.pack(fill="x", padx=10, pady=(0, 10))
+
+        tk.Button(
+            top2, text="🖨️ Print",
+            font=("Segoe UI", 11, "bold"),
+            bg="#6c757d", fg="white",
+            padx=20, pady=8, cursor="hand2",
+            command=self.print_report,
+        ).pack(side="left", padx=5)
+
+        tk.Button(
+            top2, text="📊 Export Excel",
+            font=("Segoe UI", 11, "bold"),
+            bg="#28a745", fg="white",
+            padx=20, pady=8, cursor="hand2",
+            command=self.export_excel,
+        ).pack(side="left", padx=5)
+
+        tk.Button(
+            top2, text="📄 Export PDF",
+            font=("Segoe UI", 11, "bold"),
+            bg="#dc3545", fg="white",
+            padx=20, pady=8, cursor="hand2",
+            command=self.export_pdf,
+        ).pack(side="left", padx=5)
+
+        # Info
+        self.info_label = tk.Label(
+            self.parent,
+            text="Select month and report type, then click 'Load'.",
+            font=("Segoe UI", 10, "italic"),
+            bg="#f0f4f8", fg="#556677",
+        )
+        self.info_label.pack(pady=(0, 10))
+
+        # Preview tree
+        tree_frame = tk.Frame(self.parent, bg="#f0f4f8")
+        tree_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        cols = [c[0] for c in REPORT_COLUMNS]
+        self.tree = ttk.Treeview(
+            tree_frame, columns=cols,
+            show="headings", height=18,
+        )
+
+        for label, key, width, align in REPORT_COLUMNS:
+            self.tree.heading(label, text=label)
+            self.tree.column(label, width=width * 3, anchor=align, stretch=False)
+
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        self.tree.tag_configure(
+            "dept_header",
+            background="#d4e4f7",
+            foreground="#1a3a6b",
+            font=("Segoe UI", 10, "bold"),
+        )
+
+    # ----------------------------------------
+    # HELPERS
+    # ----------------------------------------
+    def _fmt_row_value(self, key, val, r):
+        """Format a value for display."""
+        if key == "bank_account":
+            if (r.get("payment_mode") or "").lower() == "bank":
+                return val or "—"
+            return "—"
+        if val is None:
+            return ""
+        if isinstance(val, (int, float)):
+            if key in ("no_late_arrivals", "no_short_leaves", "no_leaves",
+                       "no_absentees", "overtime_hours"):
+                return f"{int(val)}"
+            if key in ("sr_no",):
+                return f"{int(val)}"
+            return f"{val:,.0f}"
+        return str(val)
+
+    # ----------------------------------------
+    # LOAD
+    # ----------------------------------------
+    def load_report(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        month = self.month_var.get()
+        try:
+            year = int(self.year_var.get())
+        except ValueError:
+            messagebox.showerror("Error", "Year must be a number.")
+            return
+
+        self.month = month
+        self.year = year
+        self.report_type = self.report_var.get()
+
+        rows = db.get_all_salaries_for_month(month, year)
+
+        # Filter by type
+        if self.report_type == "Cash in Hand":
+            rows = [r for r in rows if (r.get("payment_mode") or "").lower() == "cash"]
+        elif self.report_type == "Bank Only":
+            rows = [r for r in rows if (r.get("payment_mode") or "").lower() == "bank"]
+
+        # Only rows with salary entered
+        rows = [r for r in rows if r.get("net_pay")]
+
+        # Sort by department, then sr_no
+        rows.sort(key=lambda r: (
+            (r.get("department") or "").lower(),
+            r.get("sr_no") or 0,
+        ))
+
+        self.data = rows
+
+        # Populate with department headers
+        current_dept = None
+        total_cols = len(REPORT_COLUMNS)
+
+        for r in rows:
+            dept = (r.get("department") or "Unassigned").strip() or "Unassigned"
+
+            if dept != current_dept:
+                header_vals = [""] * total_cols
+                header_vals[1] = f"▼ {dept.upper()}"
+                self.tree.insert("", "end", values=header_vals, tags=("dept_header",))
+                current_dept = dept
+
+            row_vals = [
+                self._fmt_row_value(key, r.get(key), r)
+                for (label, key, width, align) in REPORT_COLUMNS
+            ]
+            self.tree.insert("", "end", values=row_vals)
+
+        total_net = sum((r.get("net_pay") or 0) for r in rows)
+        self.info_label.config(
+            text=f"{self.report_type} — {month} {year}  |  "
+                 f"Staff: {len(rows)}  |  "
+                 f"Total Net Pay: Rs. {total_net:,.0f}"
+        )
+
+    # ----------------------------------------
+    # PRINT
+    # ----------------------------------------
+    def print_report(self):
+        if not self.data:
+            messagebox.showwarning("No Data", "Please load the report first.")
+            return
+        temp_path = str(get_payslip_dir(self.month, self.year) /
+                        f"_report_{self.report_type.replace(' ', '_')}.pdf")
+        try:
+            self._build_pdf(temp_path)
+            os.startfile(temp_path)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not generate PDF:\n{e}")
+
+    # ----------------------------------------
+    # EXCEL EXPORT
+    # ----------------------------------------
+    def export_excel(self):
+        if not self.data:
+            messagebox.showwarning("No Data", "Please load the report first.")
+            return
+
+        default_name = f"{self.report_type.replace(' ', '_')}_{self.month}_{self.year}.xlsx"
+        path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            initialfile=default_name,
+            filetypes=[("Excel files", "*.xlsx")],
+        )
+        if not path:
+            return
+
+        try:
+            import pandas as pd
+            from openpyxl.styles import Font, PatternFill, Alignment
+
+            excel_rows = []
+            current_dept = None
+
+            for r in self.data:
+                dept = (r.get("department") or "Unassigned").strip() or "Unassigned"
+
+                if dept != current_dept:
+                    row_dict = {label: "" for (label, _, _, _) in REPORT_COLUMNS}
+                    row_dict["Name"] = f"▼ {dept.upper()}"
+                    excel_rows.append(row_dict)
+                    current_dept = dept
+
+                row_dict = {}
+                for (label, key, width, align) in REPORT_COLUMNS:
+                    val = r.get(key)
+                    if key == "bank_account":
+                        val = (val or "—") if (r.get("payment_mode") or "").lower() == "bank" else "—"
+                    elif val is None:
+                        val = ""
+                    elif isinstance(val, float):
+                        if key in ("no_late_arrivals", "no_short_leaves",
+                                   "no_leaves", "no_absentees", "overtime_hours"):
+                            val = int(val)
+                        else:
+                            val = round(val, 2)
+                    row_dict[label] = val
+                excel_rows.append(row_dict)
+
+            # Totals row
+            total_dict = {label: "" for (label, _, _, _) in REPORT_COLUMNS}
+            total_dict["Name"] = "TOTAL"
+            total_dict["Basic Pay"] = round(sum((r.get("basic_pay") or 0) for r in self.data), 2)
+            total_dict["Gross Pay"] = round(sum((r.get("gross_pay") or 0) for r in self.data), 2)
+            total_dict["Total Deductions"] = round(sum((r.get("total_deductions") or 0) for r in self.data), 2)
+            total_dict["OT Allowance"] = round(sum((r.get("overtime_allowance") or 0) for r in self.data), 2)
+            total_dict["Net Pay"] = round(sum((r.get("net_pay") or 0) for r in self.data), 2)
+            excel_rows.append(total_dict)
+
+            df = pd.DataFrame(excel_rows)
+
+            with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                df.to_excel(writer, sheet_name="Report", index=False)
+                workbook = writer.book
+                worksheet = writer.sheets["Report"]
+
+                header_fill = PatternFill("solid", fgColor="1A3A6B")
+                header_font = Font(color="FFFFFF", bold=True)
+                for cell in worksheet[1]:
+                    cell.fill = header_fill
+                    cell.font = header_font
+                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+                for col_idx, col_name in enumerate(df.columns, start=1):
+                    max_len = max(
+                        len(str(col_name)),
+                        max((len(str(v)) for v in df[col_name]), default=0)
+                    ) + 3
+                    worksheet.column_dimensions[
+                        worksheet.cell(row=1, column=col_idx).column_letter
+                    ].width = min(max_len, 22)
+
+                worksheet.row_dimensions[1].height = 32
+
+            messagebox.showinfo("Success", f"Excel exported:\n{path}")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Excel export failed:\n{e}")
+
+    # ----------------------------------------
+    # PDF EXPORT
+    # ----------------------------------------
+    def export_pdf(self):
+        if not self.data:
+            messagebox.showwarning("No Data", "Please load the report first.")
+            return
+
+        default_name = f"{self.report_type.replace(' ', '_')}_{self.month}_{self.year}.pdf"
+        path = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            initialfile=default_name,
+            filetypes=[("PDF files", "*.pdf")],
+        )
+        if not path:
+            return
+
+        try:
+            self._build_pdf(path)
+            messagebox.showinfo("Success", f"PDF exported:\n{path}")
+            os.startfile(path)
+        except Exception as e:
+            messagebox.showerror("Error", f"PDF export failed:\n{e}")
+
+    # ----------------------------------------
+    # PDF BUILDER
+    # ----------------------------------------
+    def _build_pdf(self, path):
+        from reportlab.lib.pagesizes import A3, landscape
+        from reportlab.lib.units import mm
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.platypus import (
+            SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        )
+
+        # A3 landscape for 30+ columns
+        page_size = landscape(A3)
+
+        doc = SimpleDocTemplate(
+            path, pagesize=page_size,
+            leftMargin=6 * mm, rightMargin=6 * mm,
+            topMargin=8 * mm, bottomMargin=8 * mm,
+        )
+
+        styles = getSampleStyleSheet()
+        story = []
+
+        header_style = ParagraphStyle(
+            "H", parent=styles["Title"], fontSize=14,
+            textColor=colors.HexColor("#1a3a6b"), alignment=1, spaceAfter=2,
+        )
+        sub_style = ParagraphStyle(
+            "S", parent=styles["Normal"], fontSize=10,
+            textColor=colors.HexColor("#1a3a6b"), alignment=1, spaceAfter=6,
+        )
+        story.append(Paragraph(SCHOOL_NAME, header_style))
+        story.append(Paragraph(
+            f"{self.report_type} — {self.month} {self.year}", sub_style
+        ))
+        story.append(Spacer(1, 4))
+
+        headers = [c[0] for c in REPORT_COLUMNS]
+        table_data = [headers]
+        dept_rows = []
+        total_cols = len(REPORT_COLUMNS)
+
+        current_dept = None
+        for r in self.data:
+            dept = (r.get("department") or "Unassigned").strip() or "Unassigned"
+
+            if dept != current_dept:
+                header_vals = [""] * total_cols
+                header_vals[1] = f"▼ {dept.upper()}"
+                table_data.append(header_vals)
+                dept_rows.append(len(table_data) - 1)
+                current_dept = dept
+
+            row_vals = [
+                self._fmt_row_value(key, r.get(key), r)
+                for (label, key, width, align) in REPORT_COLUMNS
+            ]
+            table_data.append(row_vals)
+
+        # Totals
+        total_basic = sum((r.get("basic_pay") or 0) for r in self.data)
+        total_gross = sum((r.get("gross_pay") or 0) for r in self.data)
+        total_ded = sum((r.get("total_deductions") or 0) for r in self.data)
+        total_ot = sum((r.get("overtime_allowance") or 0) for r in self.data)
+        total_net = sum((r.get("net_pay") or 0) for r in self.data)
+
+        total_row = [""] * total_cols
+        total_row[1] = "TOTAL"
+        total_row[3] = f"{total_basic:,.0f}"
+        total_row[11] = f"{total_gross:,.0f}"
+        total_row[25] = f"{total_ded:,.0f}"
+        total_row[27] = f"{total_ot:,.0f}"
+        total_row[28] = f"{total_net:,.0f}"
+        table_data.append(total_row)
+        total_row_idx = len(table_data) - 1
+
+        # Column widths
+        col_widths = [c[2] * 2.83 for c in REPORT_COLUMNS]
+        page_width_pt = page_size[0] - 12 * mm
+        total_width = sum(col_widths)
+        if total_width > page_width_pt:
+            scale = page_width_pt / total_width
+            col_widths = [w * scale for w in col_widths]
+
+        t = Table(table_data, colWidths=col_widths, repeatRows=1)
+
+        style = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a3a6b")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 6.5),
+            ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("FONT", (0, 1), (-1, -1), "Helvetica", 6),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#1a3a6b")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.2, colors.lightgrey),
+            ("BACKGROUND", (0, total_row_idx), (-1, total_row_idx), colors.HexColor("#fff3cd")),
+            ("FONT", (0, total_row_idx), (-1, total_row_idx), "Helvetica-Bold", 6.5),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("LEFTPADDING", (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ]
+
+        for idx, (label, key, width, align) in enumerate(REPORT_COLUMNS):
+            style.append(("ALIGN", (idx, 1), (idx, -1), align.upper()))
+
+        for idx in dept_rows:
+            style.append(("BACKGROUND", (0, idx), (-1, idx), colors.HexColor("#d4e4f7")))
+            style.append(("SPAN", (0, idx), (-1, idx)))
+            style.append(("FONT", (0, idx), (-1, idx), "Helvetica-Bold", 7))
+            style.append(("TEXTCOLOR", (0, idx), (-1, idx), colors.HexColor("#1a3a6b")))
+            style.append(("ALIGN", (0, idx), (-1, idx), "LEFT"))
+
+        t.setStyle(TableStyle(style))
+        story.append(t)
+
+        story.append(Spacer(1, 10))
+        footer_style = ParagraphStyle(
+            "F", parent=styles["Normal"], fontSize=7,
+            textColor=colors.grey, alignment=1,
+        )
+        story.append(Paragraph(
+            f"Total Staff: {len(self.data)}  |  "
+            f"Total Basic: Rs. {total_basic:,.0f}  |  "
+            f"Total Gross: Rs. {total_gross:,.0f}  |  "
+            f"Total Deductions: Rs. {total_ded:,.0f}  |  "
+            f"TOTAL NET PAY: Rs. {total_net:,.0f}",
+            footer_style
+        ))
+
+        doc.build(story)
