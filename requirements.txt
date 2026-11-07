@@ -1,5 +1,11 @@
-openpyxl>=3.1.0
-pandas>=2.0.0
-reportlab>=4.0.0
-pillow>=10.0.0
-requests>=2.31.0
+pandas  
+openpyxl  
+reportlab  
+Pillow  
+qrcode  
+requests  
+pdf2image  
+pywhatkit  
+twilio  
+selenium  
+webdriver-manager 
