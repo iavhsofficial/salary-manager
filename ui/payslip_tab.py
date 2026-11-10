@@ -2,6 +2,7 @@
 Payslips tab — generate PDF slips for all staff in one click.
 """
 import os
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -55,13 +56,15 @@ class PayslipTab:
             command=self.preview,
         ).pack(side="left", padx=20)
 
-        tk.Button(
+        # Button ko self.btn_generate banaya hai taake background mein isay disable kiya ja sake
+        self.btn_generate = tk.Button(
             top, text="📄 Generate All Payslips",
             font=("Segoe UI", 11, "bold"),
             bg="#28a745", fg="white",
             padx=20, pady=8, cursor="hand2",
             command=self.generate_all,
-        ).pack(side="left", padx=5)
+        )
+        self.btn_generate.pack(side="left", padx=5)
 
         tk.Button(
             top, text="📂 Open Folder",
@@ -130,10 +133,8 @@ class PayslipTab:
             name = s.get("name", "")
             net = s.get("net_pay") or 0
 
-            # Check if salary was entered
             has_salary = bool(net)
 
-            # Check if PDF already exists
             safe_name = name.replace(" ", "_")
             pdf_path = folder / f"{safe_name}.pdf"
             has_pdf = pdf_path.exists()
@@ -162,7 +163,7 @@ class PayslipTab:
         )
 
     # ----------------------------------------
-    # GENERATE ALL
+    # GENERATE ALL (UPDATED WITH THREADING)
     # ----------------------------------------
     def generate_all(self):
         month = self.month_var.get()
@@ -177,8 +178,6 @@ class PayslipTab:
             return
         
         rows = db.get_all_salaries_for_month(month, year)
-
-        # Filter only those with salary entered
         ready_rows = [r for r in rows if r.get("net_pay")]
 
         if not ready_rows:
@@ -198,6 +197,19 @@ class PayslipTab:
         if not confirm:
             return
 
+        # Button ko disable karein taake user dobara click na kare
+        self.btn_generate.config(state="disabled", text="⏳ Generating...")
+        self.info_label.config(text=f"Generating payslips for {month} {year}... Please wait.")
+
+        # Background thread shuru karein
+        threading.Thread(
+            target=self._generate_all_process, 
+            args=(ready_rows, month, year), 
+            daemon=True
+        ).start()
+
+    def _generate_all_process(self, ready_rows, month, year):
+        # Ye function background mein chalega, isliye UI hang nahi hogi
         success = 0
         failed = 0
 
@@ -245,12 +257,18 @@ class PayslipTab:
                 print(f"Error for {s.get('name')}: {e}")
                 failed += 1
 
+        # Jab loop mukammal ho jaye, toh UI ko wapas update karein (main thread mein)
+        # Tkinter mein UI update hamesha main thread se hona chahiye
+        self.parent.after(0, lambda: self._on_generation_complete(success, failed, month, year))
+
+    def _on_generation_complete(self, success, failed, month, year):
         messagebox.showinfo(
             "Payslips Generated",
             f"✅ Success: {success}\n"
             f"❌ Failed: {failed}\n\n"
             f"Folder: payslips/{month}_{year}/"
         )
+        self.btn_generate.config(state="normal", text="📄 Generate All Payslips")
         self.preview()
 
     # ----------------------------------------
@@ -270,7 +288,6 @@ class PayslipTab:
 
         folder = get_payslip_dir(month, year)
 
-        # Windows: use explorer
         try:
             os.startfile(str(folder))
         except Exception as e:
